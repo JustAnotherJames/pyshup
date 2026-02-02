@@ -1,0 +1,30 @@
+[project]
+name = "pyshup"
+version = "0.1.0"
+authors = [
+    {name = "James Hammer", email = "YetAnotherYames@gmail.com"},
+]
+description = "Python embedded DSL for generating shell scripts"
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "Operating System :: OS Independent",
+]
+keywords = ["python", "shell", "transpile", "codegen", "DSL"]
+license = "GPL-3.0-only"
+license-files = ["LICEN[CS]E*"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/JustAnotherJames/pyshup"
+Issues = "https://github.com/JustAnotherJames/pyshup/issues"
+
+[build-system]
+requires = ["uv_build>=0.9.26,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
