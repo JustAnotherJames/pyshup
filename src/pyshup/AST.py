@@ -103,6 +103,10 @@ capture = """capture() {
     return 0
 }"""
 
+class Environment:
+    def __init__(self):
+        self.needs_capture = False
+
 T = TypeVar("T", bound="Node")
 
 class Node(ABC):
@@ -124,12 +128,15 @@ class Node(ABC):
     def adopt(self, node):
         if node is None:
             return None
+        
         if isinstance(node, list):
             for n in node:
-                n.parent = self
+                if not n.parent:
+                    n.parent = self
                 #self.children.append(n)
         else:
-            node.parent = self
+            if not node.parent:
+                node.parent = self
             #if node != self:
             #    self.children.append(node)
         return node
@@ -251,7 +258,7 @@ class Expression(CoreNode):
 
 class Variable(Expression):
     children = []
-    def __init__(self, name):
+    def __init__(self, name: str):
         super().__init__()
         self.name = name
         
@@ -264,7 +271,7 @@ class Literal(Expression):
         self.value = value
         
 class Command(Expression):
-    children = ['command', 'args', 'stdout', 'stderr', 'returnCode']
+    children = ['command', 'args', 'defined_stdout', 'defined_stderr', 'defined_returnCode']
     def __init__(self, command: Expression | None = None, args: list[Expression] | None = None, name: str | None = None):
         super().__init__()
         self.command = self.adopt(command)
@@ -272,36 +279,28 @@ class Command(Expression):
         
         characters = string.ascii_letters + string.digits
         self.name = name or f"TMP_{''.join(random.choices(characters, k=5))}"
-        if self.command:
-            Command.variable_map[self.name] = {
-                'stdout': self.adopt(Variable(f'{self.name}_stdout')),
-                'stderr': self.adopt(Variable(f'{self.name}_stderr')),
-                'returnCode':  self.adopt(Variable(f'{self.name}_returnCode'))
-            }
-            
-    # this is a bad hack to allow captures from one line of the AST to be addressed in other lines
-    # this is somewhat necessary because we can only assign 1 value at a time, but Command returns 3 values
-    #i.e
-    # [
-    #  Command('myVar1', ...cmd...)
-    #  Assign(Variable('v1'), Command(None, None, 'myVar1').stdout),
-    #  Assign(Variable('v2'), Command(None, None, 'myVar1').stderr),
-    #  Assign(Variable('v3'), Command(None, None, 'myVar1').returnCode) 
-    # ]
-    # TODO: move variable map into actual variable table
-    variable_map = {}
         
+        self.defined_stdout = None
+        self.defined_stderr = None
+        self.defined_returnCode = None
+
     @property
     def stdout(self) -> Variable:
-        return Command.variable_map.get(self.name, {}).get('stdout', None)
+        if not self.defined_stdout:
+            self.defined_stdout = self.adopt(Variable(f'{self.name}_stdout'))    
+        return self.defined_stdout
     
     @property
     def stderr(self) -> Variable:
-        return Command.variable_map.get(self.name, {}).get('stderr', None)
+        if not self.defined_stderr:
+            self.defined_stderr = self.adopt(Variable(f'{self.name}_stderr'))
+        return self.defined_stderr
     
     @property
     def returnCode(self) -> Variable:
-        return Command.variable_map.get(self.name, {}).get('returnCode', None)
+        if not self.defined_returnCode:
+            self.defined_returnCode = self.adopt(Variable(f'{self.name}_returnCode'))
+        return self.defined_returnCode
         
 class BinaryOperationType(Enum):
     plus = '+'
@@ -373,13 +372,18 @@ class Echo(SugarNode, Command):
 
 
 class Phase(ABC):
-    @abstractmethod
-    def visit(cls, rootNode: Node, *args, **kwargs) -> Node:
-        pass
+    def __init__(self, environment: Environment):
+        self.environment = environment
     
-    @abstractmethod
+    @singledispatchmethod
+    def visit(self, node: Node):
+        raise NotImplementedError(f"no visit implementation for {node}")
+        
+    def visit_all(self, rootNode: Node, *args, **kwargs) -> Node:
+        return self.visit_traverse(rootNode)
+    
     def visit_one(self, node: Node) -> Node:
-        pass
+        return self.visit(node)
     
     def visit_traverse(self, rootNode: Node) -> Node:
         rootNodeCopy = copy.deepcopy(rootNode)
@@ -391,6 +395,7 @@ class Phase(ABC):
             childrenNames = curr.children
             for childName in childrenNames:
                 child: Node | list[Node] = getattr(curr, childName)
+                if not child: continue
                 try:
                     if isinstance(child, list):
                         children = child
@@ -403,210 +408,196 @@ class Phase(ABC):
                 except Exception as e: # throws on nodes who's children cannot be set (i.e Command's stdout/stderr/returnCode)
                     continue
         return root
-        
-# First Phase: Validate - (this is just an example for now to make sure parents and children are set correctly)
-class Validator(Phase):
-    @singledispatchmethod
-    def visit_node(self, node: Node) -> Node:
-        # confirm AST was built correctly
-        assert(node.parent)
-        #assert(node in node.parent.children or node.parent == node)
-        return node
-    
-    def visit_one(self, node: Node):
-        return self.visit_node(node)
-    
-    def visit(self, rootNode: Node) -> Node:
-        return self.visit_traverse(rootNode)
-    
-# Second Phase: Desugaring - desugar SugarNodes into lower CoreNodes in AST
-class Desugarer(Phase):
-    @singledispatchmethod
-    def visit_sugarNode(self, node: Node):
-        assert(isinstance(node, CoreNode) and not isinstance(node, SugarNode))
-        return node
-    
-    def visit(self, rootNode: Node) -> CoreNode:
-        #no non-core nodes will exist, safe to cast
-        return cast(CoreNode, self.visit_traverse(rootNode))
-    
-    def visit_one(self, node: Node) -> Node:
-        return self.visit_sugarNode(node)
-    
-    @visit_sugarNode.register
-    def _(self, node: Echo):
-        return Command(Literal('echo'), [node.command] if node.command else None, node.name)
 
-# Third Phase: assign Variables() to actual variable table to keep track of their names and usage for future phase optimization
-#TODO:
-class VariableTable(Phase):
-    pass
-    
-# Fourth Phase: Optimize - remove uncessary nodes (i.e echo with no capture semantics should just result in echo)
-#TODO:
-class Optimizer(Phase):
+
+class EnvironmentAssignment(Phase):
     @singledispatchmethod
-    def visit_node(self, node: Node):
+    def visit(self, node: Node):
         return node
     
-    @visit_node.register
-    def _(self, node: Command):
+    @visit.register
+    def _(self, node: Variable):
+        parent = node.parent
+        if isinstance(parent, Command):
+            if parent.defined_stderr and parent.defined_stdout:
+                self.environment.needs_capture = True
         return node
         
-# Last Phase Emitter
+# Phase Emitter
 class ShellRenderer:
-    def __init__(self, indent='\t'):
+    def __init__(self, environment, indent='\t'):
         self.indent: str = indent
         self.level: int = 0
+        self.environment = environment
         
     def line(self, line: str) -> str:
         return f'{self.indent*(self.level - 1)}{line}\n'
         
     @singledispatchmethod
-    def visit_coreNode(self, node: CoreNode):
-        raise NotImplementedError(f"No visit_coreNode method for {type(node).__name__}")
+    def visit(self, node: CoreNode):
+        raise NotImplementedError(f"No visit method for {type(node).__name__}")
     
-    def visit(self, node: CoreNode) -> str:
-        return self.visit_coreNode(node)
+    def visit_all(self, node: CoreNode) -> str:
+        return self.visit(node)
     
     # Root Block
-    @visit_coreNode.register
+    @visit.register
     def _(self, node: RootBlock):
         lines = ''
         self.level += 1
         for function in node.functions:
-            lines += self.visit_coreNode(function)
+            lines += self.visit(function)
             
         for stmt in node.statements:
-            lines += self.visit_coreNode(stmt)
+            lines += self.visit(stmt)
         self.level -= 1
         return lines
         
     # Function
-    @visit_coreNode.register
+    @visit.register
     def _(self, node: Function):
         return \
             self.line(f'{node.functionName}()' + '{') + \
-            self.visit_coreNode(node.functionBody) + \
+            self.visit(node.functionBody) + \
             self.line('}')
     
     # Block
-    @visit_coreNode.register
+    @visit.register
     def _(self, node: Block):
         lines = ''
         self.level += 1
         for stmt in node.statements:
-            lines += self.visit_coreNode(stmt)
+            lines += self.visit(stmt)
         self.level -= 1
         return lines
         
     # Assign
-    @visit_coreNode.register
+    @visit.register
     def _(self, node: Assign):
-        return self.line(f'{node.lhs.name}={self.visit_coreNode(node.rhs)}')    
+        return self.line(f'{node.lhs.name}={self.visit(node.rhs)}')    
     
     # Raw
-    @visit_coreNode.register
+    @visit.register
     def _(self, node:Raw):
         return self.line(node.sh)
     
     # Comment
-    @visit_coreNode.register
+    @visit.register
     def _(self, node: Comment):
         return self.line(f'# {node.comment}')
         
     # If
-    @visit_coreNode.register
+    @visit.register
     def _(self, node: If):
         lines = ''
         if node.ifcondition:
-            lines += self.line(f'if {self.visit_coreNode(node.ifcondition)}; then')
-            lines += self.visit_coreNode(node.then) if node.then else self.line(':')
+            lines += self.line(f'if {self.visit(node.ifcondition)}; then')
+            lines += self.visit(node.then) if node.then else self.line(':')
 
         for (condition, then) in zip(node.elseifconditions, node.elifthens):
-            lines += self.line(f'elif {self.visit_coreNode(condition)}; then')
-            lines += self.visit_coreNode(then)
+            lines += self.line(f'elif {self.visit(condition)}; then')
+            lines += self.visit(then)
                 
         if node.elsethen:
             lines += self.line('else')
-            lines += self.visit_coreNode(node.elsethen)
+            lines += self.visit(node.elsethen)
                 
         lines += self.line(f'fi')
         return lines
     
     # While
-    @visit_coreNode.register
+    @visit.register
     def _(self, node: While):
         return \
-            self.line(f'while {self.visit_coreNode(node.condition)}; do') + \
-            self.visit_coreNode(node.then) + \
+            self.line(f'while {self.visit(node.condition)}; do') + \
+            self.visit(node.then) + \
             self.line('done')
             
     # Test
-    @visit_coreNode.register
+    @visit.register
     def _(self, test: Test) -> str:
-        return f'[ {self.visit_coreNode(test.expression)} -ne 0 ]'
+        return f'[ {self.visit(test.expression)} -ne 0 ]'
     
     # Print
-    @visit_coreNode.register
+    @visit.register
     def _(self, node: Print) -> str:
-        return self.line(f'echo {self.visit_coreNode(node.printExpression)}')
+        return self.line(f'echo {self.visit(node.printExpression)}')
         
     # ExpressionStatement
-    @visit_coreNode.register
+    @visit.register
     def _(self, node: ExpressionStatement):
-        return self.line(self.visit_coreNode(node.expression))
+        return self.line(self.visit(node.expression))
         
     # Variable
-    @visit_coreNode.register
+    @visit.register
     def _(self, node: Variable) -> str:
         return f'"${node.name}"'
         
     # Literal
-    @visit_coreNode.register
+    @visit.register
     def _(self, node: Literal) -> str:
         return f'{node.value}'
     
     # Command
-    @visit_coreNode.register
+    @visit.register
     def _(self, node: Command):
-        return (f'capture '
-            f'{node.stdout.name} {node.stderr.name} {node.returnCode.name} '
-            f'{self.visit_coreNode(node.command)} '
-            f'{' '.join([self.visit_coreNode(arg) for arg in (node.args or [])])}'
-        )
+        text = ''
+                
+        args = f'{' '.join([self.visit(arg) for arg in (node.args or [])])}'
+        
+        if node.defined_stdout and node.defined_stderr:
+            text += (f'capture '
+                f'{node.stdout.name} {node.stderr.name} {node.returnCode.name if node.defined_returnCode else "_" } '
+                f'{self.visit(node.command)} '
+                f'{args}'
+            )
+        elif node.defined_stdout: # just stdout
+            text += f'{node.stdout.name}={self.visit(node.command)} {args}'
+        elif node.defined_stderr: # just stderr
+            text += f'{node.stderr.name}={self.visit(node.command)} {args} 2>&1 >/dev/null'
+        else:
+            text += f'{self.visit(node.command)} {args}'
+            
+        if node.defined_returnCode and not (node.defined_stderr and node.defined_stdout):
+            text += f'{node.returnCode.name}=$?'
+        
+        return text
         
     # BinaryOperation
-    @visit_coreNode.register
+    @visit.register
     def _(self, node: BinaryOperation) -> str:
-        return f'$(({self.visit_coreNode(node.lhs)} {node.operator.value} {self.visit_coreNode(node.rhs)}))'
+        return f'$(({self.visit(node.lhs)} {node.operator.value} {self.visit(node.rhs)}))'
     
     # UnaryOperation
-    @visit_coreNode.register
+    @visit.register
     def _(self, node:UnaryOperation) -> str:
-        return f'$(({node.operator.value}{self.visit_coreNode(node.expr)}))'
+        return f'$(({node.operator.value}{self.visit(node.expr)}))'
     
     #FunctionCall
-    @visit_coreNode.register
+    @visit.register
     def _(self, node: FunctionCall):
-        return f'$({node.functionName} {' '.join([self.visit_coreNode(arg) for arg in node.args])})'
+        return f'$({node.functionName} {' '.join([self.visit(arg) for arg in node.args])})'
         
     #GroupExpression
-    @visit_coreNode.register
+    @visit.register
     def _(self, node: GroupExpression):
-        return f'({self.visit_coreNode(node.expression)})'
+        return f'({self.visit(node.expression)})'
     
 class Transpiler:
     def __init__(self):
+        self.environment = Environment()
         self.phases: list[Phase] = [
-            Validator(),
-            Desugarer(),
+            EnvironmentAssignment(self.environment),
         ]
-        self.emitter = ShellRenderer()
+        self.emitter = ShellRenderer(self.environment)
     
-    def transpile(self, node: Node) -> str:
+    def transpile(self, rootBlock: RootBlock) -> str:
+        node = rootBlock
         for phase in self.phases:
-            node = phase.visit(node)
+            node = phase.visit_all(node)
         
-        assert(isinstance(node, CoreNode))
-        return self.emitter.visit(node)
+        assert(isinstance(node, RootBlock))
+        if self.environment.needs_capture:
+            node.statements.insert(0, Raw(capture))
+        
+        return self.emitter.visit_all(node)

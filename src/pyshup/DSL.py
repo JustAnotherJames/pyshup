@@ -19,13 +19,12 @@ def get_script():
 class Script():
     current_script = ContextVar("current_script")
     
-    def __init__(self, inject_capture=False):
+    def __init__(self):
         self.transpiler = AST.Transpiler()
         self.root: AST.RootBlock = AST.RootBlock()
         self.builder = ScriptBuilder(self)
         self._token = None
-        if inject_capture:
-            self.builder.add(AST.Raw(AST.capture))
+            
             
     def render(self) -> str:
         return self.transpiler.transpile(self.root)
@@ -246,7 +245,7 @@ class DSLStatement(DSLNode):
         return statement
     
 class Print(DSLStatement):
-    def __init__(self, expr: AST.Expression):
+    def __init__(self, expr):
         expr = DSLExpression.makeASTExpression(expr)
         super().__init__(AST.Print(expr))
         self.script.builder.add(self._v)

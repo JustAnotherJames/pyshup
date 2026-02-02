@@ -3,7 +3,7 @@ from pyshup import *
 
 def test_DSL():
     
-    script = Script(inject_capture=True)
+    script = Script()
     with script as s:
         s1 = Variable('s1', 10)
         s2 = Variable('s2', -10)

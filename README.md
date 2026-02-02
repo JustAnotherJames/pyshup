@@ -38,7 +38,7 @@ with script as s:
     
 script.write('./test.sh')
 ```
-And the resulting generated bash:
+And the resulting generated shell:
 ```bash
 v1=10
 v2=20
