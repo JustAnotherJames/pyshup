@@ -228,6 +228,28 @@ class IfChainBuilderThen:
             for stmt in block.statements:
                 self.ifChainBuilder.add(stmt)
         return self.ifChainBuilder
+    
+class DSLStatement(DSLNode):
+    def __init__(self, value: AST.Statement | None = None):
+        super().__init__()
+        if value:
+            self._v = value
+    
+    @classmethod
+    def makeASTStatement(cls, value):
+        if isinstance(value, DSLStatement):
+            statement = value._v
+        elif isinstance(value, AST.Statement):
+            statement = value
+        else:
+            raise Exception(f'Error: {value} cannot be converted to AST Statement')
+        return statement
+    
+class Print(DSLStatement):
+    def __init__(self, expr: AST.Expression):
+        expr = DSLExpression.makeASTExpression(expr)
+        super().__init__(AST.Print(expr))
+        self.script.builder.add(self._v)
 
 class DSLExpression(DSLNode):
     def __init__(self, value = None):
@@ -306,13 +328,12 @@ class Echo(Command):
     def __init__(self, value, name: str | None = None):
         value = DSLExpression.makeASTExpression(value)
         super().__init__("echo", [value], name)
-        
 
 class VariableDescriptor:
     def __get__(self, obj, objtype):
         return obj._v
     
-    def __set__(self, obj: Variable, other):
+    def __set__(self, obj: Variable, other=None):
         if not isinstance(obj._v, AST.Variable):
             raise Exception('Error: Cannot assign to non-variable type')
         other = DSLExpression.makeASTExpression(other)

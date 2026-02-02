@@ -17,7 +17,7 @@ function -> Function(...)
             
 block -> stmt*
 
-stmt -> assign | raw | comment | control | ExprStmt
+stmt -> assign | raw | comment | control | Print | ExprStmt
 
 assign -> variable '=' expr
 
@@ -229,17 +229,22 @@ class While(Control):
         super().__init__()
         self.condition = self.adopt(condition)
         self.then = self.adopt(then or Block())
+        
+class Test(CoreNode):
+    def __init__(self, expression: Expression):
+        super().__init__()
+        self.expression = expression
+        
+class Print(Statement):
+    def __init__(self, printExpression: Expression):
+        super().__init__()
+        self.printExpression = self.adopt(printExpression)
        
 class ExpressionStatement(Statement):
     children = ['expression']
     def __init__(self, expression):
         super().__init__()
         self.expression = self.adopt(expression)
-        
-class Test(CoreNode):
-    def __init__(self, expression: Expression):
-        super().__init__()
-        self.expression = expression
     
 class Expression(CoreNode):
     pass
@@ -536,16 +541,21 @@ class ShellRenderer:
             self.line(f'while {self.visit_coreNode(node.condition)}; do') + \
             self.visit_coreNode(node.then) + \
             self.line('done')
+            
+    # Test
+    @visit_coreNode.register
+    def _(self, test: Test) -> str:
+        return f'[ {self.visit_coreNode(test.expression)} -ne 0 ]'
+    
+    # Print
+    @visit_coreNode.register
+    def _(self, node: Print) -> str:
+        return self.line(f'echo {self.visit_coreNode(node.printExpression)}')
         
     # ExpressionStatement
     @visit_coreNode.register
     def _(self, node: ExpressionStatement):
         return self.line(self.visit_coreNode(node.expression))
-    
-    # Test
-    @visit_coreNode.register
-    def _(self, test: Test) -> str:
-        return f'[ {self.visit_coreNode(test.expression)} -ne 0 ]'
         
     # Variable
     @visit_coreNode.register
