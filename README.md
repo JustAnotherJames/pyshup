@@ -8,6 +8,7 @@ Write structured Python code with Pythonic constructs that transpiles into porta
 ## Features
 
 - Embedded DSL in Python for shell scripting  
+- context-manager driven AST builder
 - Declarative control flow (`If`, `Else`, loops)  
 - Variables, commands, and output handling  
 - Generates clean, executable shell scripts  
@@ -20,7 +21,7 @@ Write structured Python code with Pythonic constructs that transpiles into porta
 ```python
 from pyshup import Script, Variable, If, For, Command, Print
 
-script = Script(inject_capture=True)
+script = Script()
 with script as s:
     v1 = Variable('v1', 10)
     v2 = Variable('v2', 20)

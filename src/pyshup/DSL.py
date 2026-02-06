@@ -1,11 +1,12 @@
 from __future__ import annotations
+from functools import singledispatchmethod
+
+from contextvars import ContextVar
 import tempfile
 import subprocess
 from pathlib import Path
-from contextvars import ContextVar
-from . import AST
 
-#TODO: wrap Function, FunctionCall, Raw, Comment, Command, 
+from . import AST
 
 def get_script():
     try:
@@ -30,8 +31,9 @@ class Script():
         return self.transpiler.transpile(self.root)
     
     def write(self, path: Path | str):
+        text = self.render()
         with open(path, "w") as f:
-            f.write(self.render())
+            f.write(text)
             
     def execute(self, check=True, env=None, capture_output=True):
         with tempfile.NamedTemporaryFile(mode="w+") as f:
@@ -61,45 +63,72 @@ class ScriptBuilder:
     def __init__(self, script: Script):
         self.script = script
         self.root: AST.RootBlock = self.script.root
-        self.scopes: list[AST.RootBlock | AST.Block] = [self.root]
+        self.blocks: list[AST.RootBlock | AST.Block] = [self.root]
     
     @property
     def current_block(self) -> AST.RootBlock | AST.Block:
-        return self.scopes[-1]
+        return self.blocks[-1]
 
     def add(self, stmt: AST.Statement):
         self.current_block.add(stmt)
     
     def start_block(self, block: AST.Block | None = None) -> AST.Block:
         block = block or AST.Block()
-        #self.current_block.add(block)
-        self.scopes.append(block)
+        self.blocks.append(block)
         return block
     
     def end_block(self) -> AST.RootBlock | AST.Block:
-        if len(self.scopes) == 1:
+        if len(self.blocks) == 1:
             raise Exception('Cannot close root block')
-        return self.scopes.pop()
+        return self.blocks.pop()
 
 class DSLNode:
-    def __init__(self):
-        pass
-    
     @property
     def script(self) -> Script:
         return get_script()
+    
+class Function(DSLNode):
+    def __init__(self, functionName: str, *functionParams: Variable):
+        self.functionName = functionName
+        self.ast_functionParams = [DSLExpression.makeASTExpression(param) for param in functionParams]
+        self.ast_function = AST.Function(self.functionName, self.ast_functionParams) # type: ignore
+        self.functionBody = FunctionBody(self)
+        self.script.builder.root.add(self.ast_function)
+        
+    def Then(self, block: AST.Block | None = None):
+        if block:
+            for stmt in block.statements:
+                self.functionBody.add(stmt)
+        return self.functionBody
+
+class FunctionBody(DSLNode):
+    def __init__(self, dsl_function: Function):
+        self.dsl_function = dsl_function
+        self.ast_function = dsl_function.ast_function
+        self.functionBlock = self.ast_function.functionBody
+        
+    def add(self, statement: AST.Statement):
+        if not self.functionBlock:
+            raise Exception('Cannot add statement without Then Context')
+        self.functionBlock.add(statement)
+        
+    def __enter__(self):
+        self.script.builder.start_block(self.functionBlock)
+        return self
+    
+    def __exit__(self, *_):
+        self.script.builder.end_block()
         
 class For(DSLNode):
     def __init__(self, initialization: AST.Assign, condition: AST.Expression, incrementation: AST.Assign):
-        super().__init__()
         self.initialization = initialization
         self.condition = condition
-        self.incrementaiton = incrementation
+        self.incrementation = incrementation
         
-        self.ast_while: AST.While = AST.While(AST.Test(self.condition))
+        self.ast_while: AST.While = AST.While(AST.Condition(self.condition))
         self.forThen: ForThen = ForThen(self)
         
-        self.script.builder.add(initialization)
+        self.script.builder.add(self.initialization)
         self.script.builder.add(self.ast_while)
     
     def Then(self, block: AST.Block | None = None):
@@ -124,14 +153,14 @@ class ForThen(DSLNode):
         return self
     
     def __exit__(self, *_):
-        self.script.builder.add(self.dsl_for.incrementaiton)
+        self.script.builder.add(self.dsl_for.incrementation)
         self.script.builder.end_block()
         
 class While(DSLNode):
     def __init__(self, condition: AST.Expression):
         self.condition = condition
         self.whileThen = WhileThen(self)
-        self.ast_while = AST.While(AST.Test(self.condition))
+        self.ast_while = AST.While(AST.Condition(self.condition))
         self.script.builder.add(self.ast_while)
         
     def Then(self, block: AST.Block | None = None):
@@ -157,14 +186,11 @@ class WhileThen(DSLNode):
     
     def __exit__(self, *_):
         self.script.builder.end_block()
-    
-        
         
 class If(DSLNode):
     def __init__(self, condition: AST.Expression):
-        super().__init__()
         self.condition = condition
-        self.ast_if = AST.If(AST.Test(self.condition))
+        self.ast_if = AST.If(AST.Condition(self.condition))
         self.script.builder.add(self.ast_if)
         
     def Then(self, block: AST.Block | None = None):
@@ -204,7 +230,7 @@ class IfChainBuilder(DSLNode):
             raise Exception('ElseIf needs If context')
         
         block = AST.Block()
-        self.ast_if.elseifconditions.append(AST.Test(condition))
+        self.ast_if.elseifconditions.append(AST.Condition(condition))
         self.ast_if.elifthens.append(block)
         return IfChainBuilderThen(self, block)
     
@@ -230,7 +256,6 @@ class IfChainBuilderThen:
     
 class DSLStatement(DSLNode):
     def __init__(self, value: AST.Statement | None = None):
-        super().__init__()
         if value:
             self._v = value
     
@@ -244,20 +269,34 @@ class DSLStatement(DSLNode):
             raise Exception(f'Error: {value} cannot be converted to AST Statement')
         return statement
     
+class Return(DSLStatement):
+    def __init__(self, returnExpression = None, returnMethod='echo'):
+        if returnExpression:
+            returnExpression = DSLExpression.makeASTExpression(returnExpression)
+        assert(returnExpression is None or isinstance(returnExpression, AST.Expression))
+        self.script.builder.add(AST.Return(returnExpression, returnMethod))
+    
 class Print(DSLStatement):
-    def __init__(self, expr):
-        expr = DSLExpression.makeASTExpression(expr)
-        super().__init__(AST.Print(expr))
+    def __init__(self, *args):
+        args = [DSLExpression.makeASTExpression(arg) for arg in args]
+        super().__init__(AST.Print(args))
         self.script.builder.add(self._v)
+        
+class Raw(DSLStatement):
+    def __init__(self, rawString: str):
+        self.ast_raw: AST.Raw = AST.Raw(rawString)
+        super().__init__(self.ast_raw)
+        self.script.builder.add(self.ast_raw)
+    
+class Comment(DSLStatement):
+    def __init__(self, comment: str):
+        self.ast_comment: AST.Comment = AST.Comment(comment)
+        super().__init__(self.ast_comment)
+        self.script.builder.add(self.ast_comment)
 
 class DSLExpression(DSLNode):
     def __init__(self, value = None):
-        super().__init__()
-        if not value:
-            return
-        if isinstance(value, AST.Expression):
-            self._v = value
-        else:
+        if value:
             self._v: AST.Expression = DSLExpression.makeASTExpression(value)
             
     @classmethod
@@ -274,11 +313,11 @@ class DSLExpression(DSLNode):
         
     def __add__(self, other):
         other = DSLExpression.makeASTExpression(other)
-        return AST.BinaryOperation(self._v, AST.BinaryOperation.plus, other)
+        return AST.BinaryOperation(self._v, AST.BinaryOperationType.plus, other)
     
     def __sub__(self, other):
         other = DSLExpression.makeASTExpression(other)
-        return AST.BinaryOperation(self._v, AST.BinaryOperation.minus, other)
+        return AST.BinaryOperation(self._v, AST.BinaryOperationType.minus, other)
     
     def __eq__(self, other): # type: ignore
         other = DSLExpression.makeASTExpression(other)
@@ -301,12 +340,10 @@ class DSLExpression(DSLNode):
         return AST.BinaryOperation(self._v, AST.BinaryOperationType.greaterThan, other)
     
 class Command(DSLExpression):
-    def __init__(self, value = None, args: list | None = None, manual_variable: str | None = None):
+    def __init__(self, value = None, args: list = [], manual_variable: str | None = None):
         value = DSLExpression.makeASTExpression(value) if value else None
         args = [DSLExpression.makeASTExpression(arg) for arg in (args or [])]
-        self._v = AST.Command(value, args, manual_variable)
-        
-        super().__init__()
+        super().__init__(AST.Command(value, args, manual_variable))
         if value:
             self.script.builder.add(AST.ExpressionStatement(self._v))
             
@@ -324,9 +361,9 @@ class Command(DSLExpression):
         return self._v.returnCode
     
 class Echo(Command):
-    def __init__(self, value, name: str | None = None):
-        value = DSLExpression.makeASTExpression(value)
-        super().__init__("echo", [value], name)
+    def __init__(self, *args, name: str | None = None):
+        args = [DSLExpression.makeASTExpression(arg) for arg in args]
+        super().__init__("echo", args, name)
 
 class VariableDescriptor:
     def __get__(self, obj, objtype):
@@ -341,14 +378,12 @@ class VariableDescriptor:
 class Variable(DSLExpression):
     v = VariableDescriptor()
     
-    def __init__(self, name, initial_value):
-        self._v: AST.Variable = AST.Variable(name) # type: ignore
-        initial_value = DSLExpression.makeASTExpression(initial_value)
-        
-        super().__init__()
+    def __init__(self, name, initial_value = None):
+        super().__init__(AST.Variable(name))
         if initial_value:
-            self.script.builder.add(AST.Assign(self._v, initial_value))
+            initial_value = DSLExpression.makeASTExpression(initial_value)
+            self.script.builder.add(AST.Assign(self._v, initial_value)) # type: ignore
     
     def set(self, other):
         other = DSLExpression.makeASTExpression(other)
-        return AST.Assign(self._v, other)
+        return AST.Assign(self._v, other) # type: ignore

@@ -11,7 +11,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Operating System :: OS Independent",
 ]
-keywords = ["python", "shell", "transpile", "codegen", "DSL"]
+keywords = ["python", "shell", "script", "scripting", "transpile", "codegen", "DSL"]
 license = "GPL-3.0-only"
 license-files = ["LICEN[CS]E*"]
 dependencies = []
@@ -28,3 +28,8 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.0.2",
 ]
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+addopts = ["-ra", "-q"]
+testpaths = ["src/tests"]

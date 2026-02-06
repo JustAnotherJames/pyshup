@@ -2,43 +2,41 @@ import pytest
 from pyshup import *
 
 def test_DSL():
-    
     script = Script()
     with script as s:
-        s1 = Variable('s1', 10)
-        s2 = Variable('s2', -10)
+        with Function('testFunction', Variable('p'), Variable('q')).Then():
+            #Print(Variable('p')) # this becomes part of the return value since it is printed to stdout. Solution?
+            Return(Variable('q') + 10, 'echo')
         
-        s1.v = s1 + s2
+        v1 = Variable('v1', 10)
+        v2 = Variable('v2', 20)
+        v3 = Variable('v3', 0)
         
-        c = Echo(s1).returnCode
-        s2.v = c
+        v3.v = v1 + v2
+
+        with If(v3 == 30).Then() as c:
+            Print("They're Equal!")
+        with c.Else().Then() as c:
+            Print("Error, your cpu is bugged!", "good luck")
         
-        Echo(s2, "v0")
-        Echo(Command(None, None, "v0").stderr)
-        Echo(Command(None, None, "v0").stdout)
-        Echo(c)
+        with For(v3.set(0), v3 < v1 + v2, v3.set(v3 + 1)).Then():
+            Print(v3)
+        t = Echo("this is a test")
+        Print(t.stdout)
+        Print(t.stderr)
+        Print(t.returnCode)
         
-        with If(s1 == s2).Then() as c:
-            Echo("return code and value are equal, capture of echo return code is 0:")
-            Echo("s1: ")
-            Echo(s1)
-            Echo("return code: ")
-            Echo(s2)
-            Echo("return code v2:")
-            c.add(AST.ExpressionStatement(AST.Echo(AST.Command(None, None, "v0").returnCode)))
-        with c.Else().Then():
-            Echo("return code and value are NOT equal, capture of echo return code is NOT 0:")
-            Echo("s1: ")
-            Echo(s1)
-            Echo("return code: ")
-            Echo(s2)
-            Echo("return code v2:")
-            c.add(AST.ExpressionStatement(AST.Echo(AST.Command(None, None, "v0").returnCode)))
+        v3.v = Command('testFunction', [10, 20]).stdout
+        Print(v3)
         
-        with For(s1.set(s2), s1 < 10, s1.set(s1 + 1)).Then():
-            Echo(s1)
+        v1.v = 'one'
+        v2.v = 'two'
+        Print(v1, v2, v3)
     
     print(script.render())
     #script.write('./test.sh')
     #res = script.execute()
     #print(res)
+
+if __name__ == "__main__":
+    test_DSL()
