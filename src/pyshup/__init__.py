@@ -1,6 +1,35 @@
-from .DSL import Script, get_script, Variable, Echo, Command, Comment, Raw, Print, If, While, For, Function, Return
+from . import AST, DSL
+from .DSL import (
+    Command,
+    Comment,
+    Echo,
+    For,
+    Function,
+    If,
+    Print,
+    Raw,
+    Return,
+    Script,
+    Variable,
+    While,
+    get_script,
+)
 
-from . import DSL
-from . import AST
-    
-__all__ = ["Script", "get_script", "Variable", "Echo", "Command", "Comment", "Raw", "Print", "Command", "If", "While", "For", "Function", "Return", "AST", "DSL"]
+__all__ = [
+    "Script",
+    "get_script",
+    "Variable",
+    "Echo",
+    "Command",
+    "Comment",
+    "Raw",
+    "Print",
+    "Command",
+    "If",
+    "While",
+    "For",
+    "Function",
+    "Return",
+    "AST",
+    "DSL",
+]
