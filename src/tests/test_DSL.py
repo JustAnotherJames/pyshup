@@ -1,7 +1,8 @@
 from pyshup import Command, Echo, For, Function, If, Print, Return, Script, Variable
+from tests.conftest import shellcheck
 
 
-def test_DSL():
+def test_DSL() -> None:
     script = Script()
     with script:
         with Function("testFunction", Variable("p"), Variable("q")).Then():
@@ -34,10 +35,9 @@ def test_DSL():
         v2.v = "two"
         Print(v1, v2, v3)
 
-    print(script.render())
-    # script.write('./test.sh')
-    # res = script.execute()
-    # print(res)
+    code = script.render()
+    print(code)
+    shellcheck(code)
 
 
 if __name__ == "__main__":

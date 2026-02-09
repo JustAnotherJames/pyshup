@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from pathlib import Path
+from typing import Any
 
 from . import AST
 
 
-def get_script():
+def get_script() -> Script:
     try:
         return Script.current_script.get()
     except LookupError:
@@ -16,41 +17,35 @@ def get_script():
 
 
 class Script:
-    current_script = ContextVar("current_script")
+    current_script: ContextVar[Script] = ContextVar("current_script")
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.transpiler = AST.Transpiler()
         self.root: AST.RootBlock = AST.RootBlock()
         self.builder = ScriptBuilder(self)
-        self._token = None
+        self._token: None | Token[Script] = None
 
     def render(self) -> str:
         return self.transpiler.transpile(self.root)
 
-    def write(self, path: Path | str):
+    def write(self, path: Path | str) -> None:
         text = self.render()
         with open(path, "w") as f:
             f.write(text)
 
-    def execute(self, check=True, env=None, capture_output=True):
+    def execute(self, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
         with tempfile.NamedTemporaryFile(mode="w+") as f:
             f.write(self.render())
             f.flush()
             f.seek(0)
-            proc = subprocess.run(
-                ["sh", f.name],
-                capture_output=capture_output,
-                text=True,
-                check=check,
-                env=env,
-            )
+            proc = subprocess.run(["sh", f.name], **kwargs)
             return proc
 
-    def __enter__(self):
+    def __enter__(self) -> ScriptBuilder:
         self._token = Script.current_script.set(self)
         return self.builder
 
-    def __exit__(self, *_):
+    def __exit__(self, *_: Any) -> None:
         if self._token:
             Script.current_script.reset(self._token)
         else:
@@ -67,8 +62,9 @@ class ScriptBuilder:
     def current_block(self) -> AST.RootBlock | AST.Block:
         return self.blocks[-1]
 
-    def add(self, stmt: AST.Statement):
+    def add(self, stmt: AST.Statement) -> ScriptBuilder:
         self.current_block.add(stmt)
+        return self
 
     def start_block(self, block: AST.Block | None = None) -> AST.Block:
         block = block or AST.Block()
@@ -97,7 +93,7 @@ class Function(DSLNode):
         self.functionBody = FunctionBody(self)
         self.script.builder.root.add(self.ast_function)
 
-    def Then(self, block: AST.Block | None = None):
+    def Then(self, block: AST.Block | None = None) -> FunctionBody:
         if block:
             for stmt in block.statements:
                 self.functionBody.add(stmt)
@@ -110,16 +106,17 @@ class FunctionBody(DSLNode):
         self.ast_function = dsl_function.ast_function
         self.functionBlock = self.ast_function.functionBody
 
-    def add(self, statement: AST.Statement):
+    def add(self, statement: AST.Statement) -> FunctionBody:
         if not self.functionBlock:
             raise Exception("Cannot add statement without Then Context")
         self.functionBlock.add(statement)
+        return self
 
-    def __enter__(self):
+    def __enter__(self) -> FunctionBody:
         self.script.builder.start_block(self.functionBlock)
         return self
 
-    def __exit__(self, *_):
+    def __exit__(self, *_: Any) -> None:
         self.script.builder.end_block()
 
 
@@ -140,7 +137,7 @@ class For(DSLNode):
         self.script.builder.add(self.initialization)
         self.script.builder.add(self.ast_while)
 
-    def Then(self, block: AST.Block | None = None):
+    def Then(self, block: AST.Block | None = None) -> ForThen:
         if block:
             for stmt in block.statements:
                 self.forThen.add(stmt)
@@ -153,16 +150,17 @@ class ForThen(DSLNode):
         self.ast_while: AST.While = dsl_for.ast_while
         self.thenBlock = self.ast_while.then
 
-    def add(self, statement: AST.Statement):
+    def add(self, statement: AST.Statement) -> ForThen:
         if not self.thenBlock:
             raise Exception("Cannot add statement without Then Context")
         self.thenBlock.add(statement)
+        return self
 
-    def __enter__(self):
+    def __enter__(self) -> ForThen:
         self.script.builder.start_block(self.thenBlock)
         return self
 
-    def __exit__(self, *_):
+    def __exit__(self, *_: Any) -> None:
         self.script.builder.add(self.dsl_for.incrementation)
         self.script.builder.end_block()
 
@@ -174,7 +172,7 @@ class While(DSLNode):
         self.ast_while = AST.While(AST.Condition(self.condition))
         self.script.builder.add(self.ast_while)
 
-    def Then(self, block: AST.Block | None = None):
+    def Then(self, block: AST.Block | None = None) -> WhileThen:
         if block:
             for stmt in block.statements:
                 self.whileThen.add(stmt)
@@ -187,16 +185,17 @@ class WhileThen(DSLNode):
         self.ast_while = self.dsl_while.ast_while
         self.thenBlock = self.ast_while.then
 
-    def add(self, statement: AST.Statement):
+    def add(self, statement: AST.Statement) -> WhileThen:
         if not self.thenBlock:
             raise Exception("Cannot add statement without Then Context")
         self.thenBlock.add(statement)
+        return self
 
-    def __enter__(self):
+    def __enter__(self) -> WhileThen:
         self.script.builder.start_block(self.thenBlock)
         return self
 
-    def __exit__(self, *_):
+    def __exit__(self, *_: Any) -> None:
         self.script.builder.end_block()
 
 
@@ -206,7 +205,7 @@ class If(DSLNode):
         self.ast_if = AST.If(AST.Condition(self.condition))
         self.script.builder.add(self.ast_if)
 
-    def Then(self, block: AST.Block | None = None):
+    def Then(self, block: AST.Block | None = None) -> IfChainBuilder:
         builder = IfChainBuilder(self.ast_if)
         builder.start_block(self.ast_if.then)
         if block:
@@ -220,26 +219,27 @@ class IfChainBuilder(DSLNode):
         self.ast_if: AST.If = ast_if
         self.current_block: AST.Block | None = None
 
-    def start_block(self, thenBlock: AST.Block):
+    def start_block(self, thenBlock: AST.Block) -> None:
         self.current_block = thenBlock
         self.script.builder.start_block(self.current_block)
 
-    def end_block(self):
+    def end_block(self) -> None:
         self.current_block = None
         self.script.builder.end_block()
 
-    def __enter__(self):
+    def __enter__(self) -> IfChainBuilder:
         return self
 
-    def __exit__(self, *_):
+    def __exit__(self, *_: Any) -> None:
         self.end_block()
 
-    def add(self, statement: AST.Statement):
+    def add(self, statement: AST.Statement) -> IfChainBuilder:
         if not self.current_block:
             raise Exception("Cannot add statement without Then Context")
         self.current_block.add(statement)
+        return self
 
-    def ElseIf(self, condition: AST.Expression):
+    def ElseIf(self, condition: AST.Expression) -> IfChainBuilderThen:
         if not self.ast_if:
             raise Exception("ElseIf needs If context")
 
@@ -248,7 +248,7 @@ class IfChainBuilder(DSLNode):
         self.ast_if.elifthens.append(block)
         return IfChainBuilderThen(self, block)
 
-    def Else(self):
+    def Else(self) -> IfChainBuilderThen:
         if self.ast_if.elsethen is not None:
             raise Exception("Else Block already defined")
 
@@ -262,7 +262,7 @@ class IfChainBuilderThen:
         self.ifChainBuilder = ifChainBuilder
         self.thenBlock = thenBlock
 
-    def Then(self, block: AST.Block | None = None):
+    def Then(self, block: AST.Block | None = None) -> IfChainBuilder:
         self.ifChainBuilder.start_block(self.thenBlock)
         if block:
             for stmt in block.statements:
@@ -276,7 +276,7 @@ class DSLStatement(DSLNode):
             self._v = value
 
     @classmethod
-    def makeASTStatement(cls, value):
+    def makeASTStatement(cls, value: Any) -> AST.Statement:
         if isinstance(value, DSLStatement):
             statement = value._v
         elif isinstance(value, AST.Statement):
@@ -287,17 +287,18 @@ class DSLStatement(DSLNode):
 
 
 class Return(DSLStatement):
-    def __init__(self, returnExpression=None, returnMethod="echo"):
+    def __init__(
+        self, returnExpression: Any | None = None, returnMethod: str = "echo"
+    ) -> None:
         if returnExpression:
             returnExpression = DSLExpression.makeASTExpression(returnExpression)
-        assert returnExpression is None or isinstance(returnExpression, AST.Expression)
         self.script.builder.add(AST.Return(returnExpression, returnMethod))
 
 
 class Print(DSLStatement):
-    def __init__(self, *args):
-        args = [DSLExpression.makeASTExpression(arg) for arg in args]
-        super().__init__(AST.Print(args))
+    def __init__(self, *args: Any, **kwargs: Any):
+        convertedArgs = [DSLExpression.makeASTExpression(arg) for arg in args]
+        super().__init__(AST.Print(convertedArgs, **kwargs))
         self.script.builder.add(self._v)
 
 
@@ -316,12 +317,12 @@ class Comment(DSLStatement):
 
 
 class DSLExpression(DSLNode):
-    def __init__(self, value=None):
+    def __init__(self, value: Any = None):
         if value:
             self._v: AST.Expression = DSLExpression.makeASTExpression(value)
 
     @classmethod
-    def makeASTExpression(cls, value) -> AST.Expression:  # convert to Expression
+    def makeASTExpression(cls, value: Any) -> AST.Expression:  # convert to Expression
         if isinstance(value, AST.Expression):
             expression = value
         elif isinstance(value, DSLExpression):
@@ -332,39 +333,44 @@ class DSLExpression(DSLNode):
             raise Exception(f"Error: {value} cannot be converted to AST Expression")
         return expression
 
-    def __add__(self, other):
+    def __add__(self, other: Any) -> AST.BinaryOperation:
         other = DSLExpression.makeASTExpression(other)
         return AST.BinaryOperation(self._v, AST.BinaryOperationType.plus, other)
 
-    def __sub__(self, other):
+    def __sub__(self, other: Any) -> AST.BinaryOperation:
         other = DSLExpression.makeASTExpression(other)
         return AST.BinaryOperation(self._v, AST.BinaryOperationType.minus, other)
 
-    def __eq__(self, other):  # type: ignore
+    def __eq__(self, other: Any) -> AST.BinaryOperation:  # type: ignore
         other = DSLExpression.makeASTExpression(other)
         return AST.BinaryOperation(self._v, AST.BinaryOperationType.equal, other)
 
-    def __lt__(self, other):
+    def __lt__(self, other: Any) -> AST.BinaryOperation:
         other = DSLExpression.makeASTExpression(other)
         return AST.BinaryOperation(self._v, AST.BinaryOperationType.lessThan, other)
 
-    def __gt__(self, other):
+    def __gt__(self, other: Any) -> AST.BinaryOperation:
         other = DSLExpression.makeASTExpression(other)
         return AST.BinaryOperation(self._v, AST.BinaryOperationType.greaterThan, other)
 
-    def __lte__(self, other):
+    def __lte__(self, other: Any) -> AST.BinaryOperation:
         other = DSLExpression.makeASTExpression(other)
         return AST.BinaryOperation(
             self._v, AST.BinaryOperationType.lessThanEqual, other
         )
 
-    def __gte__(self, other):
+    def __gte__(self, other: Any) -> AST.BinaryOperation:
         other = DSLExpression.makeASTExpression(other)
         return AST.BinaryOperation(self._v, AST.BinaryOperationType.greaterThan, other)
 
 
 class Command(DSLExpression):
-    def __init__(self, value=None, args: list = [], manual_variable: str | None = None):
+    def __init__(
+        self,
+        value: Any = None,
+        args: list[Any] = [],
+        manual_variable: str | None = None,
+    ):
         value = DSLExpression.makeASTExpression(value) if value else None
         args = [DSLExpression.makeASTExpression(arg) for arg in (args or [])]
         super().__init__(AST.Command(value, args, manual_variable))
@@ -372,50 +378,52 @@ class Command(DSLExpression):
             self.script.builder.add(AST.ExpressionStatement(self._v))
 
     @property
-    def stdout(self):
+    def stdout(self) -> AST.CommandVariable:
         assert isinstance(self._v, AST.Command)
         return self._v.stdout
 
     @property
-    def stderr(self):
+    def stderr(self) -> AST.CommandVariable:
         assert isinstance(self._v, AST.Command)
         return self._v.stderr
 
     @property
-    def returnCode(self):
+    def returnCode(self) -> AST.CommandVariable:
         assert isinstance(self._v, AST.Command)
         return self._v.returnCode
 
 
 class Echo(Command):
-    def __init__(self, *args, name: str | None = None):
-        args = [DSLExpression.makeASTExpression(arg) for arg in args]
-        super().__init__("echo", args, name)
+    def __init__(self, *args: Any, name: str | None = None):
+        convertedArgs = [DSLExpression.makeASTExpression(arg) for arg in args]
+        super().__init__("echo", convertedArgs, name)
 
 
 class VariableDescriptor:
-    def __get__(self, obj, objtype):
+    def __get__(self, obj: Variable) -> AST.Variable:
+        assert isinstance(obj._v, AST.Variable)
         return obj._v
 
-    def __set__(self, obj: Variable, other=None):
-        if not isinstance(obj._v, AST.Variable):
-            raise Exception("Error: Cannot assign to non-variable type")
+    def __set__(self, obj: Variable, other: Any = None) -> None:
         other = DSLExpression.makeASTExpression(other)
+        assert isinstance(obj._v, AST.Variable)
         obj.script.builder.add(AST.Assign(obj._v, other))
 
 
 class Variable(DSLExpression):
     v = VariableDescriptor()
 
-    def __init__(self, name, initial_value=None):
+    def __init__(self, name: str, initial_value: Any = None):
         super().__init__(AST.Variable(name))
         if initial_value:
             initial_value = DSLExpression.makeASTExpression(initial_value)
-            self.script.builder.add(AST.Assign(self._v, initial_value))  # type: ignore
+            assert isinstance(self._v, AST.Variable)
+            self.script.builder.add(AST.Assign(self._v, initial_value))
 
-    def set(self, other):
+    def set(self, other: Any) -> AST.Assign:
         other = DSLExpression.makeASTExpression(other)
-        return AST.Assign(self._v, other)  # type: ignore
+        assert isinstance(self._v, AST.Variable)
+        return AST.Assign(self._v, other)
 
 
 class Literal(DSLExpression):

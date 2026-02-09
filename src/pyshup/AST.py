@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 import string
-from abc import ABC
+from abc import ABC, abstractmethod
 from enum import Enum
 from functools import singledispatchmethod
 from typing import TypeVar
@@ -126,11 +126,11 @@ class Environment:
             self.parent_environment.child_env.append(self)
         assert self.parent_environment is not None or self.root == self
         assert self.root is not None
-        self.child_env = []
+        self.child_env: list[Environment] = []
 
         self.needs_capture = False
-        self.functions = {}
-        self.variables = {}
+        self.functions: dict[str, Function] = {}
+        self.variables: dict[str, Statement] = {}
 
     def _setEnv(self, type: EnvType, name: str, value: Node) -> bool:
         if self._getEnv(type, name) is not None:
@@ -140,12 +140,15 @@ class Environment:
 
     def _getEnv(self, type: EnvType, name: str) -> Node | None:
         storageType = getattr(self, type.value)
-        env = self
+        env: Environment | None = self
         while True:
             if name in storageType:
-                return storageType[name]
-            env = env.parent_environment
-            if env is None:
+                t = storageType[name]
+                assert t is None or isinstance(t, Node)
+                return t
+            if env and env.parent_environment:
+                env = env.parent_environment
+            else:
                 break
         return None
 
@@ -170,7 +173,7 @@ T = TypeVar("T", bound="Node")
 
 
 class Node(ABC):
-    children = []
+    children: list[str] = []
 
 
 class CoreNode(Node):
@@ -191,7 +194,7 @@ class RootBlock(CoreNode):
             elif isinstance(x, Statement):
                 self.statements.append(x)
 
-    def add(self, statement: Statement | Function):
+    def add(self, statement: Statement | Function) -> RootBlock:
         if isinstance(statement, Function):
             self.functions.append(statement)
         elif isinstance(statement, Statement):
@@ -226,10 +229,11 @@ class Block(CoreNode):
 
         self.parent: Node | None = None
 
-    def insert(self, index, statement: Statement):
+    def insert(self, index: int, statement: Statement) -> Block:
         self.statements.insert(index, statement)
+        return self
 
-    def add(self, statement: Statement):
+    def add(self, statement: Statement) -> Block:
         self.statements.append(statement)
         return self
 
@@ -250,7 +254,9 @@ class Assign(Statement):
 class Return(Statement):
     children = ["expression"]
 
-    def __init__(self, expression: Expression | None = None, returnMethod="echo"):
+    def __init__(
+        self, expression: Expression | None = None, returnMethod: str = "echo"
+    ):
         super().__init__()
         self.returnMethod = returnMethod
         self.expression = expression
@@ -321,15 +327,17 @@ class Condition(CoreNode):
 class Print(Statement):
     children = ["args"]
 
-    def __init__(self, args: list[Expression] = []):
+    def __init__(self, args: list[Expression] = [], sep: str = " ", end: str = "\\n"):
         super().__init__()
         self.args = args
+        self.sep = sep
+        self.end = end
 
 
 class ExpressionStatement(Statement):
     children = ["expression"]
 
-    def __init__(self, expression):
+    def __init__(self, expression: Expression):
         super().__init__()
         self.expression = expression
 
@@ -349,15 +357,15 @@ class Variable(Expression):
 class CommandVariable(Variable):
     children = []
 
-    def __init__(self, *args):
-        super().__init__(*args)
+    def __init__(self, name: str):
+        super().__init__(name)
         self.command: Command
 
 
 class Literal(Expression):
     children = []
 
-    def __init__(self, value: int | str | bool | None, raw=False):
+    def __init__(self, value: int | str | bool | None, raw: bool = False):
         super().__init__()
         self.value = value
         self.type = type(self.value)
@@ -380,9 +388,9 @@ class Command(Expression):
         characters = string.ascii_letters + string.digits
         self.name = name or f"TMP_{''.join(random.choices(characters, k=5))}"
 
-        self.defined_stdout = None
-        self.defined_stderr = None
-        self.defined_returnCode = None
+        self.defined_stdout: CommandVariable | None = None
+        self.defined_stderr: CommandVariable | None = None
+        self.defined_returnCode: CommandVariable | None = None
 
     @property
     def stdout(self) -> CommandVariable:
@@ -475,7 +483,7 @@ class Echo(SugarNode, Command):
         super().__init__(Literal("echo"), args, name)
 
 
-def visit_traverse(dispatcher, node) -> Node:
+def visit_traverse(dispatcher: Phase, node: Node) -> Node:
     for childName in node.children:
         child = getattr(node, childName)
         if not child:
@@ -491,65 +499,73 @@ def visit_traverse(dispatcher, node) -> Node:
     return node
 
 
+class Phase:
+    @singledispatchmethod
+    @abstractmethod
+    def visit(self, node: Node, parent: Node) -> Node:
+        pass
+
+
 # for debugging
-class Print_AST:
-    def __init__(self):
+class Print_AST(Phase):
+    def __init__(self) -> None:
         self.string = ""
         self.indent = 0
 
     @singledispatchmethod
-    def visit(self, node: Node, parent: Node):
+    def visit(self, node: Node, parent: Node) -> Node:
         self.string += "\t" * self.indent + node.__repr__() + "\n"
         self.indent += 1
         visit_traverse(self, node)
         self.indent -= 1
         return node
 
-    def print(self, node):
+    def print(self, node: Node) -> str:
         visit_traverse(self, node)
         return self.string
 
 
 # associates nested blocks, performs variable renaming
 # detects when "capture" function needs to be injected
-class PrePass:
+class PrePass(Phase):
     def __init__(self, environment: Environment):
         self.environment = environment
 
     @singledispatchmethod
-    def visit(self, node: Node, parent: Node):
+    def visit(self, node: Node, parent: Node) -> Node:
         return visit_traverse(self, node)
 
     # Command
     @visit.register
-    def _(self, node: Command, parent: Node):
+    def _(self, node: Command, parent: Node) -> Node:
         if node.defined_stdout and node.defined_stderr:
             self.environment.root.needs_capture = True
         return node
 
     # Block
     @visit.register
-    def _(self, node: Block, parent: Node):
+    def _(self, node: Block, parent: Node) -> Node:
         node.parent = parent
         return visit_traverse(self, node)
 
     # Return
     @visit.register
-    def _(self, node: Return, parent: Node):
+    def _(self, node: Return, parent: Node) -> Node:
         assert isinstance(parent, Block) and parent.parent is not None
         function = parent.parent
         if not isinstance(function, Function):
             raise Exception("Return statement cannot appear outside of Functions")
         function.returnStatement = node
         node.function = function
-        expression = visit_traverse(self, node.expression)
-        assert isinstance(expression, Expression)
-        node.expression = expression
+        if node.expression:
+            expression = visit_traverse(self, node.expression)
+            assert isinstance(expression, Expression)
+            node.expression = expression
         return node
 
     # Function
     @visit.register
-    def _(self, node: Function, parent: Node):
+    def _(self, node: Function, parent: Node) -> Node:
         self.environment.setFunction(node.functionName, node)
         for variable in node.functionParams or []:
             self.environment.setVariable(variable.name, variable)
@@ -562,7 +578,7 @@ class PrePass:
 
     # Variable
     @visit.register
-    def _(self, node: Variable, parent: Node):
+    def _(self, node: Variable, parent: Node) -> Node:
         # check if we've been previously registered & mangled
         existingVariable = self.environment.getVariable(node.name)
         if existingVariable:
@@ -577,7 +593,7 @@ class PrePass:
 
 # Phase Emitter
 class ShellRenderer:
-    def __init__(self, environment, indent="\t"):
+    def __init__(self, environment: Environment, indent: str = "\t"):
         self.indent: str = indent
         self.level: int = 0
         self.environment = environment
@@ -586,13 +602,13 @@ class ShellRenderer:
         return f"{self.indent * (self.level - 1)}{line}\n"
 
     @singledispatchmethod
-    def visit(self, node: CoreNode):
+    def visit(self, node: CoreNode) -> str:
         raise NotImplementedError(f"No visit method for {type(node).__name__}")
 
     # Root Block
     @visit.register
-    def _(self, node: RootBlock):
-        lines = "#!/bin/sh\n"
+    def _(self, node: RootBlock) -> str:
+        lines: str = "#!/bin/sh\n"
         self.level += 1
         for function in node.functions:
             lines += self.visit(function)
@@ -607,7 +623,7 @@ class ShellRenderer:
 
     # Function
     @visit.register
-    def _(self, node: Function):
+    def _(self, node: Function) -> str:
         # move parameters into function body with proper assignments
         if node.functionParams is not None:
             for i, param in enumerate(node.functionParams):
@@ -621,7 +637,7 @@ class ShellRenderer:
 
     # Return
     @visit.register
-    def _(self, node: Return):
+    def _(self, node: Return) -> str:
         if not node.expression:
             return ""
         assert node.function is not None
@@ -635,7 +651,7 @@ class ShellRenderer:
 
     # Block
     @visit.register
-    def _(self, node: Block):
+    def _(self, node: Block) -> str:
         lines = ""
         self.level += 1
         prev_env = self.environment
@@ -648,22 +664,22 @@ class ShellRenderer:
 
     # Assign
     @visit.register
-    def _(self, node: Assign):
+    def _(self, node: Assign) -> str:
         return self.line(f"{node.lhs.name}={self.visit(node.rhs)}")
 
     # Raw
     @visit.register
-    def _(self, node: Raw):
+    def _(self, node: Raw) -> str:
         return self.line(node.sh)
 
     # Comment
     @visit.register
-    def _(self, node: Comment):
+    def _(self, node: Comment) -> str:
         return self.line(f"# {node.comment}")
 
     # If
     @visit.register
-    def _(self, node: If):
+    def _(self, node: If) -> str:
         lines = ""
         if node.ifcondition:
             lines += self.line(f"if {self.visit(node.ifcondition)}; then")
@@ -682,7 +698,7 @@ class ShellRenderer:
 
     # While
     @visit.register
-    def _(self, node: While):
+    def _(self, node: While) -> str:
         return (
             self.line(f"while {self.visit(node.condition)}; do")
             + self.visit(node.then)
@@ -697,14 +713,14 @@ class ShellRenderer:
     # Print
     @visit.register
     def _(self, node: Print) -> str:
-        args = (
-            f"{' '.join([f'$(printf {self.visit(arg)})' for arg in (node.args or [])])}"
-        )
-        return self.line(f"echo {args}")
+        printStr = 'printf "'
+        printStr += node.sep.join(["%s"] * (len(node.args) - 1) + [f"%s{node.end}"])
+        printStr += '" ' + " ".join([self.visit(arg) for arg in (node.args or [])])
+        return self.line(printStr)
 
     # ExpressionStatement
     @visit.register
-    def _(self, node: ExpressionStatement):
+    def _(self, node: ExpressionStatement) -> str:
         return self.line(self.visit(node.expression))
 
     # Variable
@@ -723,7 +739,7 @@ class ShellRenderer:
 
     # Command
     @visit.register
-    def _(self, node: Command):
+    def _(self, node: Command) -> str:
         text = ""
 
         args = f"{' '.join([self.visit(arg) for arg in (node.args or [])])}"
@@ -769,17 +785,17 @@ class ShellRenderer:
 
     # GroupExpression
     @visit.register
-    def _(self, node: GroupExpression):
+    def _(self, node: GroupExpression) -> str:
         return f"({self.visit(node.expression)})"
 
 
 class Transpiler:
-    def __init__(self):
+    def __init__(self) -> None:
         self.globalEnvironment = Environment(None)
         self.prepass = PrePass(self.globalEnvironment)
         self.emitter = ShellRenderer(self.globalEnvironment)
 
-    def transpile(self, rootBlock: RootBlock) -> str:
+    def transpile(self, rootBlock: Node) -> str:
         node = rootBlock
         # return Print_AST().print(node)
         node = self.prepass.visit(node, None)

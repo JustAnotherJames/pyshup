@@ -26,9 +26,14 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "mypy>=1.19.1",
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
     "ruff>=0.15.0",
+    
+]
+test = [
+    "pytest>=9.0.2",
 ]
 
 [tool.ruff]
@@ -46,6 +51,13 @@ fixable = ["ALL"]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.mypy]
+python_version = 3.11
+strict = true
+ignore_missing_imports = true
+show_error_codes = true
+pretty = true
 
 [tool.pytest.ini_options]
 minversion = "9.0"

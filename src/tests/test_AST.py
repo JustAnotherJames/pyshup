@@ -8,7 +8,6 @@ from pyshup.AST import (
     Condition,
     ExpressionStatement,
     Function,
-    GroupExpression,
     If,
     Literal,
     Print,
@@ -17,13 +16,14 @@ from pyshup.AST import (
     Variable,
     While,
 )
+from tests.conftest import shellcheck
 
 
-def test_AST():
+def test_AST() -> None:
     root = RootBlock(
         [
             Function("test", None, Block([ExpressionStatement(Literal("hi"))])),
-            ExpressionStatement(Print([Literal("hi")])),
+            Print([Literal("hi")]),
             Assign(Variable("v1"), Literal(10)),
             Assign(Variable("v2"), Literal(20)),
             Assign(Variable("v1"), Variable("v2")),
@@ -57,15 +57,13 @@ def test_AST():
             Assign(Variable("v3"), Command(None, None, "v_command").returnCode),
             ExpressionStatement(
                 Command(
-                    Literal("test"),
+                    Literal('printf "%s %s %s"'),
                     [Variable("one"), Variable("two"), Variable("three")],
                 )
             ),
             Assign(
                 Variable("v4"),
-                GroupExpression(
-                    BinaryOperation(Literal(1), BinaryOperationType.plus, Literal(2))
-                ),
+                BinaryOperation(Literal(1), BinaryOperationType.plus, Literal(2)),
             ),
             Comment("this is a comment"),
         ]
@@ -74,6 +72,7 @@ def test_AST():
     transpiler = Transpiler()
     code = transpiler.transpile(root)
     print(code)
+    shellcheck(code)
 
 
 if __name__ == "__main__":
